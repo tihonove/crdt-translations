@@ -1,3 +1,4 @@
+#WIP
 #1. Введение
 Replication is a fundamental concept of distributed systems, well studied by the distributed algorithms community. Much work focuses on maintaining a global total order of operations [24] even in the presence of faults [8]. However, the associated serialisation bottleneck negatively impacts performance and scalability, while the CAP theorem [13] imposes a tradeoff between consistency and partition-tolerance.
 
