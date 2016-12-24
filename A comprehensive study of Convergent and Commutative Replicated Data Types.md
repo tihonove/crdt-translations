@@ -1,31 +1,63 @@
-#1. Introduction
-##2. Бэкграунд и модель
+#1. Введение
+Replication is a fundamental concept of distributed systems, well studied by the distributed algorithms community. Much work focuses on maintaining a global total order of operations [24] even in the presence of faults [8]. However, the associated serialisation bottleneck negatively impacts performance and scalability, while the CAP theorem [13] imposes a tradeoff between consistency and partition-tolerance.
+
+An alternative approach, eventual consistency or optimistic replication, is attractive to practioners [37, 41]. A replica may execute an operation without synchronising a priori with other replicas. The operation is sent asynchronously to other replicas; every replica eventually applies all updates, possibly in different orders. A background consensus algorithm reconciles any conflicting updates [4, 40]. This approach ensures that data remains available despite network partitions. It performs well (as the consensus bottleneck has been moved off the critical path), and the weaker consistency is considered acceptable for some classes of applications. However, reconciliation is generally complex. There is little theoretical guidance on how to design a correct optimistic system, and ad-hoc approaches have proven brittle and error-prone.
+
+In this paper, we study a simple, theoretically sound approach to eventual consistency. We propose the concept of a convergent or commutative replicated data type (CRDT), for which some simple mathematical properties ensure eventual consistency. A trivial example of a CRDT is a replicated counter, which converges because the increment and decrement operations commute (assuming no overflow). Provably, replicas of any CRDT converge to a common state that is equivalent to some correct sequential execution. As a CRDT requires no synchronisation, an update executes immediately, unaffected by network latency, faults, or disconnection. It is extremely scalable and is fault-tolerant, and does not require much mechanism. Application areas may include computation in delay-tolerant networks, latency tolerance in wide-area networks, disconnected operation, churn-tolerant peer-to-peer computing, data aggregation, and partition-tolerant cloud computing.
+
+Since, by design, a CRDT does not use consensus, the approach has strong limitations; nonetheless, some interesting and non-trivial CRDTs are known to exist. For instance, we previously published Treedoc, a sequence CRDT designed for co-operative text editing [32].
+
+Previously, only a handful of CRDTs were known. The objective of this paper is to push the envelope, studying the principles of CRDTs, and presenting a comprehensive portfolio of useful CRDT designs, including variations on registers, counters, sets, graphs, and sequences. We expect them to be of interest to practitioners and theoreticians alike.
+
+Some of our designs suffer from unbounded growth; collecting the garbage requires a weak form of synchronisation [25]. However, its liveness is not essential, as it is an optimisation, off the critical path, and not in the public interface. In the future, we plan to extend the approach to data types where common-case, time-critical operations are commutative, and rare operations require synchronisation but can be delayed to periods when the network is well connected. This concurs with Brewer’s suggestion for side-stepping the CAP impossibility [6]. It is also similar to the shopping cart design of Alvaro et al. [1], where updates commute, but check-out requires coordination. However, this extension is out of the scope of the present study.
+
+In the literature, the preferred consistency criterion is linearisability [18]. However, linearisability requires consensus in general. Therefore, we settle for the much weaker quiescent consistency [17, Section 3.3]. One challenge is to minimise “anomalies,” i.e., states that would not be observed in a sequential execution. Note also that CRDTs are weaker than non-blocking constructs, which are generally based on a hardware consensus primitive [17]. 
+
+Some of the ideas presented here paper are already known in the folklore. The contributions of this paper include:
+* In Section 2: (i) An specification language suited to asynchronous replication. (ii) A
+formalisation of state-based and operation-based replication. (iii) Two sufficient conditions
+for eventual consistency.
+* In Section 3, an comprehensive collection of useful data type designs, starting with
+counters and registers. We focus on container types (sets and maps) supporting both
+add and remove operations with clean semantics, and more complex derived types,
+such as graphs, monotonic DAGs, and sequence.
+* In Section 4, a study of the problem of garbage-collecting meta-data.
+* In Section 5, exercising some of our CRDTs in a practical example, the shopping cart.
+* A comparison with previous work, in Section 6.
+Section 7 concludes with a summary of lessons learned, and perspectives for future work.
+
+#2. Общие положения и модель системы
 Мы рассматриваем распределённую систему состояющую из процессов, соединённых в сеть с асинхронной передачей сообщений. Сеть может распадаться и восстанавливаться, узлы сети могут какое-то время работать отсединёнными от сети. Процессы могут аварийно завершаться и затем восстаналиваться, память процессов устойчива к аварийным завершениям. Так же подразумеваем "невизантийское" поведение, т.е. без процессов стремящихся наруть работу системы.
 
 ##2.1. Атомы и объекты
-Процесс может храниться птомы и объекты Атом -- бызовые немутабельный тип данных, идетфицируемый своим содержиммым. Атомы могу быть скопированый между процессами. Атомы равный, если имеют одинковый контент. Атом-типы которые есть в этой статьье включают в себя числа строки множества кортежи итд. с их обычно не мутирующими операциями. Атом-типы пишуться прописными шрифтом set.
-Объект -- мутируемый реплицируемый тип даннх. Обект-типы пишуться со строчными буквами (Set). Объект имеет айдишку, контент (пэйлоад), который может быть любым числом атомов или объектоы, еачальное состояние, и интерфейс состоящий изз набора операций. Два объекта с одной айдишкой но на разных репликах называется репликами друг-друга. Например на кар. 1 , изобращающей логический объект x, его реплики в процессах 1, 2 и 3 и текущее состояние реплики 4.
-Мы подрузумеваем что объекты независимы и не рассматриваем транзакции. Поэтому без потери обности мы фокусируемся на одном объекты во времени и используем слова процесс и реплика как одно и тоже
+Процесс может хранить атомы и объекты. Атом -- бызовый немутируемый тип данных, идетифицируемый своим содержимым. Атомы могу быть скопированы из одного процесса в другой, атомы равны, если имеют одинковое содержимое. Типы атом, рассмотриваемые в этой статье, включают в себя числа, строки, множества, кортежи и.т.д. с их обычными немутирующими операциями. Название типа атома мы обозначаем словом в нижнем регистре, например set.
 
-2.2 Операции
-Окружении состоит и неизвестных клиентов которые запрашиваюит и меняют состояние объекта посредством вызова операций на его интерфейсе на репликах по своему выборы и называются исходной репликой. Запрос исполняется локально например на все реплике. Обновление состояит из двух фаз: 1-я, клиент вызывает операцию на источник, которые может выполнить какую то начальную обработку. Потом обновление передаётся асинхронно другим репликами, это называется downstream-часть. В литературе (37) отличают state-bases и operation-based стили, которые мы рассмотрим далее.
+Объект -- мутируемый реплицируемый тип даннх. Название типа обекта будем писать с первой заглавной буквы (например, Set). Объект имеет идентификатор, содержимое (payload), который может состояить из произвольного количества атомов или объектов, начальное состояние, и интерфейс состоящий из набора операций. Два объекта с одним идентификатором, но которые находятся на разных репликах называются репликами друг-друга. Например на рис. 1, изображен логический объект x, его реплики в процессах 1, 2 и 3 и текущее состояние реплики 3.
 
-----
-спецификация 1. Схема state-based спецификации объекта. Преусловия, аргументы, вохвращаемые значения и выражения.
-----
-payload: Тип контента, которые есть на всех репликах
+Мы подрузумеваем, что объекты независимы и не рассматриваем транзакции. Поэтому без потери общности мы будем рассмотривать однин объект и будем использовать слова процесс и реплика как одно и тоже.
+
+##2.2 Операции
+Окружении состоит и неизвестных клиентов, которые запрашиваюит и меняют состояние объекта посредством вызова операций его интерфейса, выбирая реплики по своему усмотрению (которую будетм называть исходной репликой). Запрос исполняется локально, т.е. полностью на одной из реплик. Изменение объекта состоить из двух фаз: 1-я, клиент вызывает операцию на исходной реплике, которая может выполнить какую то начальную обработку запроса. Потом операция изменения передаётся асинхронно другим репликами, это называется downstream-фаза. В литературе [37] выделяются state-based и operation-based стили, которые мы рассмотрим далее.
+
+
+| Спецификация 1. Схема state-based спецификации объекта. Преусловия, аргументы, возвращаемые значения и выражения. |
+|-----|
+```
+payload: Тип соедржимого, которые имеется на всех репликах
 query: Query(args): returns
-    pre: преусловия
-    let: выполняется синхронной, нет побочных эффектов
-update: Локальная операция (args): returns
-    pre: преусловия
-    let: выполняется синхронной, побочных эффекты на source исполняются синхронно
+    pre: пре-условия
+    let: выполняется на реплике источнике синхронно, без побочных эффектов
+update: Source-local operation (args): returns
+    pre: пре-условия
+    let: выполняется  на реплике источнике синхронно, 
+        Побочные эффекты на источнике исполняются синхронно
 compare (value1, value2): boolean b
     is values1 <= value2 в полурешетке.
 merge (value1, value2): payload mergedValue
-    LUB слияние valu2 и value2 на любой реплике
+    LUB слияние valu2 и value2, на любой реплике
+```
 
-2.2.1 State-based репликация
+###2.2.1 State-based репликация
 При state-based (или пассивной репликации) обновления возникают целиком на источнике, потом распространяются передачей изменённого контента между репликами (рис 4).
 Мы специицируем state-based объект-типы как показано на Спец. 1. Payload означает - тип полезных данных, initial value -- начальное значение на каждой реплике. Update -- операции изменения, query -- запрос. Оба могут иметь аргументы и возвращаемое значение. Не мутирующие выражения помечены let, palyload меняется оператором :=. Операции выполняются атомарно.
 Для собрадения безопастнсти опарции воможны только если соблюдены пре-условия (помеченные pre) хранимые в текущем состоянии источника. Пре-условия опускаются если действую постоянно, например увеличение или уменьшение счётчика. И наобороь, non-null персловие могут быть, например элемент множества может быть удалён только если он есть во множестве.
